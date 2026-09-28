@@ -23,8 +23,14 @@
 #include <BlynkSimpleEsp32.h>
 
 /******************** L293D CONNECTIONS ********************/
+#if CONFIG_IDF_TARGET_ESP32S3
+// ESP32-S3: GPIO26–32 are wired to the flash/PSRAM chip, so use 12/13 instead.
+#define IN1 12
+#define IN2 13
+#else
 #define IN1 27
 #define IN2 26
+#endif
 #define ENA 14
 
 /******************** SPRAY SETTINGS ********************/
@@ -163,10 +169,23 @@ void setup() {
   pinMode(ENA, OUTPUT);
   motorStop();  // make sure the motor is off at power-up
 
-  Serial.println("Connecting to WiFi + Blynk...");
-  Blynk.begin(BLYNK_AUTH_TOKEN, WIFI_SSID, WIFI_PASS);
-  Serial.print("Connected. IP: ");
+  // Full-power WiFi start-up draws a current spike that browns out boards
+  // powered from a laptop USB port, so connect at reduced TX power.
+  Serial.println("Connecting to WiFi...");
+  WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.print("\nWiFi connected. IP: ");
   Serial.println(WiFi.localIP());
+
+  Serial.println("Connecting to Blynk...");
+  Blynk.config(BLYNK_AUTH_TOKEN);
+  Blynk.connect();
 
 #if RUN_SELF_TEST_ON_BOOT
   Serial.println("Self-test: forward 2s, reverse 2s");

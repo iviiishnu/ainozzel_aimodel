@@ -51,12 +51,15 @@ ESP32 → Control Signals Only
 
 # ESP32 to L293D Connections
 
-| ESP32 Pin    | L293D Pin | Purpose           |
-| ------------ | --------- | ----------------- |
-| D27 (GPIO27) | IN1       | Motor Direction 1 |
-| D26 (GPIO26) | IN2       | Motor Direction 2 |
-| D14 (GPIO14) | ENA       | Enable Motor      |
-| GND          | GND       | Common Ground     |
+| ESP32 Pin    | ESP32-S3 Pin | L293D Pin | Purpose           |
+| ------------ | ------------ | --------- | ----------------- |
+| D27 (GPIO27) | GPIO12       | IN1       | Motor Direction 1 |
+| D26 (GPIO26) | GPIO13       | IN2       | Motor Direction 2 |
+| D14 (GPIO14) | GPIO14       | ENA       | Enable Motor      |
+| GND          | GND          | GND       | Common Ground     |
+
+On an ESP32-S3, GPIO26–32 are used by the flash/PSRAM chip — use the S3 column.
+The firmware picks the right pins automatically for the board it is built for.
 
 ---
 

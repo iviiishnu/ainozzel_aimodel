@@ -1,0 +1,19 @@
+{
+  "dim": 1280,
+  "count": 288,
+  "k": 3,
+  "threshold": 0.41687506437301636,
+  "percentile": 99.0,
+  "class_names": [
+    "Anthracnose",
+    "Bacterial_Leaf_Spot",
+    "Black_rot",
+    "Downy_Mildew",
+    "Healthy",
+    "Leaf_Spot_Blight",
+    "Mosaic_Disease",
+    "Not_Leaf",
+    "Powdery_Mildew",
+    "Rust"
+  ]
+}

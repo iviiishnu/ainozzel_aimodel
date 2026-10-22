@@ -1,29 +1,52 @@
 """
-Crop Scanner — Training Pipeline (Stability Fix)
+Crop Scanner — Training Pipeline (Tractor Camera)
 =================================================
-Root causes fixed in this version:
-  1. Augmentation was too aggressive → simplified to mild, stable transforms
-  2. CLAHE/HSV jitter/blur removed from training → kept only in inference
-  3. Class weights capped at 2.0 → prevents extreme gradient bias
-  4. Phase 1 LR lowered 1e-3 → 3e-4 → smoother convergence
-  5. Fine-tuning unfreezes only last 15 layers (was 40) → prevents collapse
-  6. Gradient clipping added → prevents loss spikes
-  7. Label smoothing reduced 0.1 → 0.05 → less interference with learning signal
-  8. EarlyStopping patience tuned per phase
-  9. Validation generator has NO preprocessing_function → clean baseline
+Trains MobileNetV2 to recognise leaf diseases in frames from a camera mounted
+on a moving tractor, not just clean close-up photos.
+
+What changed vs. the previous version:
+  1. Field augmentation (field_augment.py): distance/zoom-out, soil
+     backgrounds instead of lab backdrops, motion blur, sun/shade, webcam
+     noise + JPEG, any rotation.
+  2. Stratified 80/20 split saved to models/split.json, so evaluation is
+     always on images the model never trained on.
+  3. Two validation sets: clean, and "field" (the same held-out images with
+     a fixed field augmentation). Checkpoints are picked on the field set —
+     that is what the tractor camera sees.
+  4. Fine-tuning unfreezes the top of MobileNetV2 (block_10 onward) while
+     keeping every BatchNorm frozen, which is what makes deeper fine-tuning
+     stable on a small dataset.
+
+  5. images/Not_Leaf/ (python make_not_leaf.py + your own real photos) gives
+     the model a "not a crop leaf" class, so a leaf-print shirt is no longer
+     forced into a disease.
+  6. Writes models/ood_prototypes.bin + ood_stats.json (see ood.py): rejects
+     images that look like no training leaf at all.
+
+Model input is unchanged: RGB, resize (stretch) to 224×224, /255.
+
+Usage:
+    python make_not_leaf.py        # once (keeps your real photos)
+    python train_model.py
+    python convert_tflite.py --mode float16
 """
 
 import os
 import json
 import numpy as np
+import cv2
 import tensorflow as tf
 from tensorflow.keras import layers, Model, callbacks
 from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import matplotlib
 matplotlib.use("Agg")   # works on machines without a display
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
+from concurrent.futures import ThreadPoolExecutor
+
+from field_augment import field_augment
+import ood
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -34,303 +57,241 @@ MODEL_DIR       = os.path.join(BASE_DIR, "models")
 MODEL_SAVE_PATH = os.path.join(MODEL_DIR, "crop_model.h5")
 BEST_MODEL_PATH = os.path.join(MODEL_DIR, "crop_model_best.h5")
 CLASS_JSON_PATH = os.path.join(MODEL_DIR, "class_names.json")
+SPLIT_JSON_PATH = os.path.join(MODEL_DIR, "split.json")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 IMG_SIZE   = (224, 224)   # MobileNetV2 pretrained at 224 — do not change
+LOAD_SIZE  = (256, 256)   # augment at a bit more than 224, then resize
 BATCH_SIZE = 32
 SEED       = 42
+PHASE1_EPOCHS = 15
+PHASE2_EPOCHS = 40
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
+
+tf.keras.utils.set_random_seed(SEED)
+
+# Training on a laptop CPU: all cores at 100% for hours overheats it and it
+# powers off. Cap the threads (TRAIN_THREADS=12 to use everything).
+THREADS = int(os.environ.get("TRAIN_THREADS", "6"))
+tf.config.threading.set_intra_op_parallelism_threads(THREADS)
+tf.config.threading.set_inter_op_parallelism_threads(2)
+print(f"CPU threads: {THREADS}")
+
+# Keep Windows from sleeping mid-training.
+if os.name == "nt":
+    import ctypes
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+
+# Resume after a crash: per-epoch backups, and phase 1 is skipped once done.
+BACKUP_DIR  = os.path.join(MODEL_DIR, "_train_backup")
+PHASE1_DONE = os.path.join(BACKUP_DIR, "phase1_done.weights.h5")
 
 # ─────────────────────────────────────────────
-# DATA GENERATORS
+# DATA
 # ─────────────────────────────────────────────
-# Training augmentation: mild and stable.
-# Heavy transforms (CLAHE, HSV jitter, blur) are intentionally removed.
-# They distort the training distribution too far from what the frozen
-# MobileNetV2 base expects, causing the val accuracy collapse seen in logs.
-#
-# Rule of thumb for transfer learning:
-#   Keep augmentation gentle enough that the augmented image still looks
-#   like a natural photo — not a processed artifact.
-train_datagen = ImageDataGenerator(
-    rescale=1.0 / 255.0,
-    validation_split=0.2,
-    rotation_range=15,          # was 30 — reduced to avoid distortion
-    width_shift_range=0.1,      # was 0.2
-    height_shift_range=0.1,     # was 0.2
-    shear_range=0.05,           # was 0.15 — nearly removed
-    zoom_range=0.1,             # was 0.25
-    brightness_range=[0.8, 1.2],# was [0.7, 1.3] — tighter range
-    horizontal_flip=True,
-    vertical_flip=False,
-    fill_mode='nearest',        # safer than 'reflect' for small datasets
-    # NO preprocessing_function — CLAHE/blur/HSV removed from training
-)
-
-# Validation: rescale only. No augmentation, no preprocessing_function.
-# This gives a clean, unmodified baseline to measure real accuracy.
-val_datagen = ImageDataGenerator(
-    rescale=1.0 / 255.0,
-    validation_split=0.2,
-)
-
-train_gen = train_datagen.flow_from_directory(
-    DATASET_DIR,
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode='categorical',
-    subset='training',
-    seed=SEED,
-    shuffle=True,
-)
-
-val_gen = val_datagen.flow_from_directory(
-    DATASET_DIR,
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode='categorical',
-    subset='validation',
-    seed=SEED,
-    shuffle=False,
-)
-
-CLASS_NAMES = list(train_gen.class_indices.keys())
+CLASS_NAMES = sorted(d for d in os.listdir(DATASET_DIR)
+                     if os.path.isdir(os.path.join(DATASET_DIR, d)))
 NUM_CLASSES = len(CLASS_NAMES)
 print(f"Classes ({NUM_CLASSES}): {CLASS_NAMES}")
 
-# Save class names so inference can load them dynamically
+paths, labels = [], []
+for i, cls in enumerate(CLASS_NAMES):
+    for f in sorted(os.listdir(os.path.join(DATASET_DIR, cls))):
+        if f.lower().endswith(IMG_EXTS):
+            paths.append(os.path.join(cls, f))
+            labels.append(i)
+labels = np.array(labels)
+
+train_idx, val_idx = train_test_split(
+    np.arange(len(paths)), test_size=0.2, stratify=labels, random_state=SEED)
+
 with open(CLASS_JSON_PATH, "w") as f:
     json.dump(CLASS_NAMES, f, indent=2)
-print(f"Class names saved to: {CLASS_JSON_PATH}")
+with open(SPLIT_JSON_PATH, "w") as f:
+    json.dump({"train": [paths[i] for i in train_idx],
+               "val": [paths[i] for i in val_idx]}, f, indent=1)
+print(f"Train {len(train_idx)} / Val {len(val_idx)} — split saved to {SPLIT_JSON_PATH}")
 
+
+def _load(rel_path):
+    img = cv2.imread(os.path.join(DATASET_DIR, rel_path))
+    return cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), LOAD_SIZE,
+                      interpolation=cv2.INTER_AREA)
+
+
+print("Loading images into memory…")
+with ThreadPoolExecutor(8) as pool:
+    images = np.stack(list(pool.map(_load, paths)))
+
+
+def to_model_input(img_rgb):
+    """Same as preprocessing.preprocess_for_inference (minus decode)."""
+    return cv2.resize(img_rgb, IMG_SIZE, interpolation=cv2.INTER_LINEAR
+                      ).astype(np.float32) / 255.0
+
+
+def build_val_set(field: bool):
+    rng = np.random.default_rng(1234)   # fixed → identical every run
+    # float16: half the RAM for the multi-crop set; /255 values lose nothing
+    # that matters, and Keras casts to float32 per batch.
+    x = np.stack([to_model_input(field_augment(images[i], rng) if field else images[i])
+                  .astype(np.float16) for i in val_idx])
+    y = tf.keras.utils.to_categorical(labels[val_idx], NUM_CLASSES)
+    return x, y
+
+
+val_clean = build_val_set(field=False)
+val_field = build_val_set(field=True)
+
+
+class FieldSequence(tf.keras.utils.Sequence):
+    """Training batches with random tractor-camera augmentation."""
+
+    def __init__(self, idx, clean_fraction=0.15):
+        super().__init__(workers=2, use_multiprocessing=False)
+        self.idx = np.array(idx)
+        self.clean_fraction = clean_fraction
+        self.pool = ThreadPoolExecutor(max(2, THREADS // 2))
+        self.on_epoch_end()
+
+    def __len__(self):
+        return int(np.ceil(len(self.idx) / BATCH_SIZE))
+
+    def on_epoch_end(self):
+        np.random.shuffle(self.idx)
+
+    def _one(self, args):
+        i, seed = args
+        rng = np.random.default_rng(seed)
+        img = images[i]
+        if rng.random() >= self.clean_fraction:
+            img = field_augment(img, rng)
+        elif rng.random() < 0.5:
+            img = img[:, ::-1]
+        return to_model_input(np.ascontiguousarray(img))
+
+    def __getitem__(self, b):
+        batch = self.idx[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
+        seeds = np.random.randint(0, 2**31 - 1, len(batch))
+        x = np.stack(list(self.pool.map(self._one, zip(batch, seeds))))
+        y = tf.keras.utils.to_categorical(labels[batch], NUM_CLASSES)
+        return x, y
+
+
+train_seq = FieldSequence(train_idx)
 
 # ─────────────────────────────────────────────
 # CLASS WEIGHTS (capped to prevent extreme bias)
 # ─────────────────────────────────────────────
-# compute_class_weight('balanced') can produce weights like 5.8 vs 0.3
-# when classes are very imbalanced. Extreme weights destabilize training —
-# the model overcorrects on rare classes and forgets common ones.
-# Capping at 2.0 gives mild balancing without gradient explosions.
-MAX_CLASS_WEIGHT = 2.0
-
-all_labels = train_gen.classes
-raw_weights = compute_class_weight(
-    class_weight='balanced',
-    classes=np.unique(all_labels),
-    y=all_labels
-)
-class_weight_dict = {
-    i: min(float(w), MAX_CLASS_WEIGHT)
-    for i, w in enumerate(raw_weights)
-}
-print("Class weights (capped):", {CLASS_NAMES[k]: round(v, 3) for k, v in class_weight_dict.items()})
+MAX_CLASS_WEIGHT = 3.0
+raw_weights = compute_class_weight('balanced', classes=np.arange(NUM_CLASSES),
+                                   y=labels[train_idx])
+class_weight_dict = {i: min(float(w), MAX_CLASS_WEIGHT) for i, w in enumerate(raw_weights)}
+print("Class weights (capped):",
+      {CLASS_NAMES[k]: round(v, 2) for k, v in class_weight_dict.items()})
 
 
 # ─────────────────────────────────────────────
-# MODEL DEFINITION
+# MODEL
 # ─────────────────────────────────────────────
-def build_model(num_classes, img_size=(224, 224), trainable_base=False):
-    """
-    MobileNetV2 + stable top layers.
+def build_model(num_classes):
+    base_model = MobileNetV2(weights='imagenet', include_top=False,
+                             input_shape=(*IMG_SIZE, 3))
+    base_model.trainable = False
 
-    Design decisions:
-      - training=False on base_model call: keeps BatchNorm layers in the
-        frozen base running in inference mode even during training.
-        Without this, BN statistics shift every batch and cause instability.
-      - Two Dense blocks with BatchNorm: stable, proven pattern.
-      - Dropout 0.4 / 0.3: moderate regularization.
-      - Label smoothing 0.05 (was 0.1): small enough to not interfere
-        with the learning signal on a 7-class problem.
-    """
-    base_model = MobileNetV2(
-        weights='imagenet',
-        include_top=False,
-        input_shape=(*img_size, 3)
-    )
-    base_model.trainable = trainable_base
-
-    inputs = tf.keras.Input(shape=(*img_size, 3))
-    # training=False is critical — keeps frozen BN layers stable
-    x = base_model(inputs, training=False)
-
+    inputs = tf.keras.Input(shape=(*IMG_SIZE, 3))
+    # Model takes [0,1] (what the app feeds it); MobileNetV2 wants [-1,1].
+    x = layers.Rescaling(2.0, offset=-1.0)(inputs)
+    # training=False keeps BatchNorm in inference mode even when fine-tuning
+    x = base_model(x, training=False)
     x = layers.GlobalAveragePooling2D()(x)
-
-    x = layers.Dense(512)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    x = layers.Dropout(0.4)(x)
-
+    x = layers.Dropout(0.3)(x)
     x = layers.Dense(256)(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = layers.Dropout(0.3)(x)
-
     outputs = layers.Dense(num_classes, activation='softmax')(x)
-
-    model = Model(inputs, outputs)
-    return model, base_model
+    return Model(inputs, outputs), base_model
 
 
-# ─────────────────────────────────────────────
-# PHASE 1 — Train top layers only (base frozen)
-# ─────────────────────────────────────────────
-print("\n=== PHASE 1: Training top layers (base frozen) ===")
-model, base_model = build_model(NUM_CLASSES, IMG_SIZE, trainable_base=False)
-
-model.compile(
-    # LR lowered from 1e-3 → 3e-4.
-    # 1e-3 is too aggressive for transfer learning — causes the optimizer
-    # to overshoot the loss minimum, producing the unstable val curve seen in logs.
-    # clipnorm=1.0 prevents gradient spikes from large class-weight corrections.
-    optimizer=tf.keras.optimizers.Adam(learning_rate=3e-4, clipnorm=1.0),
-    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
-    metrics=['accuracy']
-)
-model.summary()
-
-cb_phase1 = [
-    # Monitor val_loss (more stable signal than val_accuracy for early stopping).
-    # patience=8: give the model enough time to climb out of local minima.
-    callbacks.EarlyStopping(
-        monitor='val_loss',
-        patience=8,
-        restore_best_weights=True,
-        verbose=1
-    ),
-    # Halve LR when val_loss plateaus for 3 epochs.
-    callbacks.ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=3,
-        min_lr=1e-6,
-        verbose=1
-    ),
-    callbacks.ModelCheckpoint(
-        BEST_MODEL_PATH,
-        monitor='val_accuracy',
-        save_best_only=True,
-        verbose=1
-    ),
-]
-
-history1 = model.fit(
-    train_gen,
-    validation_data=val_gen,
-    epochs=40,
-    class_weight=class_weight_dict,
-    callbacks=cb_phase1,
-)
-
-val_acc_phase1 = max(history1.history['val_accuracy'])
-print(f"\nPhase 1 best val accuracy: {val_acc_phase1 * 100:.2f}%")
-
-
-# ─────────────────────────────────────────────
-# PHASE 2 — Fine-tune last 15 layers of base
-# ─────────────────────────────────────────────
-# Only run fine-tuning if Phase 1 reached a reasonable baseline.
-# If Phase 1 val accuracy is below 50%, fine-tuning will make things worse —
-# the top layers haven't converged yet, so the gradients flowing back into
-# the base are noisy and will corrupt the pretrained weights.
-
-FINETUNE_THRESHOLD = 0.50   # skip fine-tuning if Phase 1 didn't reach this
-
-if val_acc_phase1 < FINETUNE_THRESHOLD:
-    print(f"\n⚠️  Phase 1 val accuracy ({val_acc_phase1*100:.1f}%) is below "
-          f"{FINETUNE_THRESHOLD*100:.0f}%. Skipping fine-tuning.")
-    print("   → Check your dataset, class balance, and run Phase 1 again.")
-    history2 = None
-else:
-    print("\n=== PHASE 2: Fine-tuning last 15 base layers ===")
-
-    # Freeze everything first, then selectively unfreeze.
-    # Unfreezing only the last 15 layers (was 40) is the key fix.
-    # The first ~140 layers of MobileNetV2 are generic feature detectors
-    # (edges, textures, colors) — they don't need updating for leaf diseases.
-    # The last 15 layers are higher-level feature combiners — these benefit
-    # from fine-tuning on domain-specific data.
-    for layer in base_model.layers:
-        layer.trainable = False
-    for layer in base_model.layers[-15:]:
-        layer.trainable = True
-
-    trainable_count = sum(1 for l in base_model.layers if l.trainable)
-    print(f"Trainable base layers: {trainable_count} / {len(base_model.layers)}")
-
-    model.compile(
-        # LR kept at 1e-5 — correct for fine-tuning.
-        # clipnorm=1.0 still applied — important when base layers are unfrozen.
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5, clipnorm=1.0),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
-        metrics=['accuracy']
-    )
-
-    cb_phase2 = [
-        callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=6,
-            restore_best_weights=True,
-            verbose=1
-        ),
-        callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.3,
-            patience=3,
-            min_lr=1e-7,
-            verbose=1
-        ),
-        callbacks.ModelCheckpoint(
-            BEST_MODEL_PATH,
-            monitor='val_accuracy',
-            save_best_only=True,
-            verbose=1
-        ),
+def make_callbacks(patience, phase):
+    return [
+        callbacks.BackupAndRestore(os.path.join(BACKUP_DIR, phase)),
+        callbacks.EarlyStopping(monitor='val_loss', patience=patience,
+                                restore_best_weights=True, verbose=1),
+        callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3,
+                                    min_lr=1e-7, verbose=1),
+        callbacks.ModelCheckpoint(BEST_MODEL_PATH, monitor='val_accuracy',
+                                  save_best_only=True, verbose=1),
     ]
 
-    history2 = model.fit(
-        train_gen,
-        validation_data=val_gen,
-        epochs=20,
-        class_weight=class_weight_dict,
-        callbacks=cb_phase2,
-    )
 
-    val_acc_phase2 = max(history2.history['val_accuracy'])
-    print(f"\nPhase 2 best val accuracy: {val_acc_phase2 * 100:.2f}%")
+loss = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05)
 
+# ── PHASE 1 — head only ──────────────────────
+print("\n=== PHASE 1: Training top layers (base frozen) ===")
+model, base_model = build_model(NUM_CLASSES)
+if os.path.exists(PHASE1_DONE):
+    print(f"Phase 1 already finished — loading {PHASE1_DONE}")
+    model.load_weights(PHASE1_DONE)
+    history1 = None
+else:
+    model.compile(optimizer=tf.keras.optimizers.Adam(1e-3, clipnorm=1.0),
+                  loss=loss, metrics=['accuracy'])
+    history1 = model.fit(train_seq, validation_data=val_field, epochs=PHASE1_EPOCHS,
+                         class_weight=class_weight_dict,
+                         callbacks=make_callbacks(6, "phase1"))
+    model.save_weights(PHASE1_DONE)
 
-# ─────────────────────────────────────────────
-# SAVE FINAL MODEL
-# ─────────────────────────────────────────────
+# ── PHASE 2 — fine-tune top of the base ──────
+print("\n=== PHASE 2: Fine-tuning MobileNetV2 from block_10 ===")
+base_model.trainable = True
+unfreeze = False
+for layer in base_model.layers:
+    if layer.name.startswith("block_10"):
+        unfreeze = True
+    layer.trainable = unfreeze and not isinstance(layer, layers.BatchNormalization)
+print(f"Trainable base layers: {sum(l.trainable for l in base_model.layers)} "
+      f"/ {len(base_model.layers)}")
+
+model.compile(optimizer=tf.keras.optimizers.Adam(3e-5, clipnorm=1.0),
+              loss=loss, metrics=['accuracy'])
+history2 = model.fit(train_seq, validation_data=val_field, epochs=PHASE2_EPOCHS,
+                     class_weight=class_weight_dict, callbacks=make_callbacks(10, "phase2"))
+
 model.save(MODEL_SAVE_PATH)
+import shutil
+shutil.rmtree(BACKUP_DIR, ignore_errors=True)   # finished — next run starts fresh
 print(f"\nFinal model saved to: {MODEL_SAVE_PATH}")
 
-
 # ─────────────────────────────────────────────
-# TRAINING CURVES
+# REPORT
 # ─────────────────────────────────────────────
-def plot_history(h1, h2=None):
-    acc1  = h1.history['accuracy']
-    vacc1 = h1.history['val_accuracy']
+best = tf.keras.models.load_model(BEST_MODEL_PATH)
+for name, (x, y) in (("clean", val_clean), ("field", val_field)):
+    pred = best.predict(x, verbose=0).argmax(1)
+    true = y.argmax(1)
+    print(f"\nBest model — {name} val accuracy: {(pred == true).mean() * 100:.2f}%")
+    for i, cls in enumerate(CLASS_NAMES):
+        m = true == i
+        print(f"   {cls:22s} {(pred[m] == i).mean() * 100:6.1f}%  (n={m.sum()})")
 
-    if h2 is not None:
-        acc2  = h2.history['accuracy']
-        vacc2 = h2.history['val_accuracy']
-        all_acc  = acc1 + acc2
-        all_vacc = vacc1 + vacc2
-        split = len(acc1)
-    else:
-        all_acc  = acc1
-        all_vacc = vacc1
-        split = None
+print("\nFitting unfamiliar-image check (ood.py)…")
+ood.compute_and_save(best, images, labels, train_idx, val_idx, CLASS_NAMES, to_model_input)
 
-    epochs = range(1, len(all_acc) + 1)
 
+def plot_history(h1, h2):
+    h1_acc = h1.history['accuracy'] if h1 else []
+    h1_vacc = h1.history['val_accuracy'] if h1 else []
+    acc = h1_acc + h2.history['accuracy']
+    vacc = h1_vacc + h2.history['val_accuracy']
+    epochs = range(1, len(acc) + 1)
     plt.figure(figsize=(10, 5))
-    plt.plot(epochs, all_acc,  label='Train Accuracy')
-    plt.plot(epochs, all_vacc, label='Val Accuracy')
-    if split:
-        plt.axvline(x=split, color='gray', linestyle='--', label='Fine-tune start')
+    plt.plot(epochs, acc, label='Train Accuracy (augmented)')
+    plt.plot(epochs, vacc, label='Val Accuracy (field-simulated)')
+    plt.axvline(x=len(h1_acc), color='gray', linestyle='--',
+                label='Fine-tune start')
     plt.title('Training Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
@@ -341,5 +302,6 @@ def plot_history(h1, h2=None):
     plt.savefig(curve_path, dpi=150)
     plt.close()
     print(f"Training curve saved to: {curve_path}")
+
 
 plot_history(history1, history2)

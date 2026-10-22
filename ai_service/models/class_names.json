@@ -1,9 +1,3 @@
-[
-  "Anthracnose",
-  "Bacterial_Leaf_Spot",
-  "Black_rot",
-  "Downy_Mildew",
-  "Mosaic_Disease",
-  "Powdery_Mildew",
-  "Rust"
-]
+version https://git-lfs.github.com/spec/v1
+oid sha256:eba8cb4dbb714c88a09e822b81e74f816e861aac55a191e87d74831db903b6cc
+size 187

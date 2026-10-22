@@ -31,6 +31,12 @@ android {
         versionName = flutter.versionName
     }
 
+    // The legacy targetSdk above is required, but lint treats it as fatal
+    // in release builds (a Play Store rule; this app is sideloaded).
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+    }
+
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")

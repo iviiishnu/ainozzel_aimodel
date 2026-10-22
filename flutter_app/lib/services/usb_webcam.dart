@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:uvccamera/uvccamera.dart';
 
+import '../config.dart';
+
 /// Drives the USB/OTG webcam directly over UVC.
 ///
 /// The tablet's camera service doesn't list USB webcams (no external-camera
@@ -32,6 +34,11 @@ class UsbWebcam extends ChangeNotifier {
     if (_started) return;
     _started = true;
 
+    // The uvccamera plugin is Android-only; in a browser it throws.
+    if (kIsWeb) {
+      _setStatus('USB camera is only available in the Android app.');
+      return;
+    }
     if (!await UvcCamera.isSupported()) {
       _setStatus('This device does not support USB cameras.');
       return;
@@ -64,6 +71,11 @@ class UsbWebcam extends ChangeNotifier {
     if (controller == null || !controller.value.isInitialized) {
       throw StateError('USB webcam is not ready');
     }
+    // NOTE: the saved photo has red and blue swapped (the live preview is
+    // fine) — see AppConfig.cameraSwapRedBlue. The fix is applied where the
+    // frame is decoded (TfliteService.predictCameraFrame, free) or before a
+    // server upload (swapRedBlueJpeg), not here: re-encoding every 1080p
+    // frame in Dart cost seconds per scan.
     final shot = await controller.takePicture();
     return File(shot.path);
   }
@@ -113,10 +125,11 @@ class UsbWebcam extends ChangeNotifier {
     if (device == null || _controller != null) return;
     _setStatus('Opening "${device.name}"…');
 
-    // ~720p: plenty for the 224×224 model and keeps uploads small.
+    // Settings → Camera resolution (default ~720p).
     final controller = UvcCameraController(
       device: device,
-      resolutionPreset: UvcCameraResolutionPreset.medium,
+      resolutionPreset: UvcCameraResolutionPreset.values
+          .byName(AppConfig.cameraResolution),
     );
     _controller = controller;
     try {

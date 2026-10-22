@@ -17,7 +17,7 @@ class ServerUnavailableException implements Exception {
 }
 
 class ApiService {
-  static const Duration _timeout = Duration(seconds: 60);
+  static const Duration _timeout = Duration(seconds: 15);
 
   static Uri _uri(String path) {
     final base = AppConfig.backendUrl;
@@ -31,15 +31,23 @@ class ApiService {
   /// Returns the result JSON, or `{"error": ...}` for a request the server
   /// rejected (e.g. no leaf detected). Throws [ServerUnavailableException]
   /// when the server can't be reached.
-  static Future<Map<String, dynamic>> uploadImage(File imageFile) async {
+  static Future<Map<String, dynamic>> uploadImage(File imageFile,
+      {Duration timeout = _timeout}) async {
+    return uploadBytes(await imageFile.readAsBytes(),
+        filename: imageFile.uri.pathSegments.last, timeout: timeout);
+  }
+
+  /// Same as [uploadImage] for raw bytes (web has no file paths).
+  static Future<Map<String, dynamic>> uploadBytes(List<int> bytes,
+      {String filename = 'image.jpg', Duration timeout = _timeout}) async {
     final request = http.MultipartRequest('POST', _uri('/api/crop/analyze'))
-      ..files.add(await http.MultipartFile.fromPath('file', imageFile.path));
+      ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
 
     final http.StreamedResponse streamed;
     final String body;
     try {
-      streamed = await request.send().timeout(_timeout);
-      body = await streamed.stream.bytesToString();
+      streamed = await request.send().timeout(timeout);
+      body = await streamed.stream.bytesToString().timeout(timeout);
     } on SocketException catch (e) {
       throw ServerUnavailableException('Cannot reach server: ${e.message}');
     } on TimeoutException {

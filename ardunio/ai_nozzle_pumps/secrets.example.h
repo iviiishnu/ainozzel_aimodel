@@ -12,3 +12,8 @@
 // 2.4 GHz WiFi the ESP32 should join
 #define WIFI_SSID "your-wifi-name"
 #define WIFI_PASS "your-wifi-password"
+
+// Optional second 2.4 GHz network (e.g. your phone hotspot in the field).
+// The board joins whichever of the two is in range. Delete both lines if unused.
+#define WIFI_SSID2 "your-phone-hotspot"
+#define WIFI_PASS2 "hotspot-password"

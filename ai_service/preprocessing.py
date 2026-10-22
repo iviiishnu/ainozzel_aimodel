@@ -33,7 +33,17 @@ LEAF_MIN_VAL     = 40    # below → black background / deep shadow
 LEAF_HUE_RANGE   = (5, 90)    # red-brown … yellow … green = plant tissue
 HEALTHY_HUE_RANGE = (35, 85)  # green = healthy tissue
 DAMAGE_WORK_SIZE = (224, 224)
-MIN_LEAF_FRACTION = 0.04      # below → "no leaf in image"
+# Below → "no leaf in image". 0.10 keeps 99.4% of real leaves (dataset +
+# tractor-camera simulation) and rejects plain fabric, walls and sky.
+MIN_LEAF_FRACTION = 0.10
+
+# Leaf crop (camera frames). Mirrored in flutter_app/lib/services/leaf_crop.dart.
+CROP_WORK_WIDTH   = 160    # leaf is located on a frame this wide
+CROP_MIN_GREEN    = 0.02   # green share of the frame needed to trust the box
+CROP_MARGIN       = 1.15   # box side × this (keeps lesions at the leaf edge)
+CROP_MIN_SIDE     = 0.30   # never crop tighter than this × the short side
+CROP_FULL_SIDE    = 0.80   # box ≥ this × short side → use the whole short side
+CROP_SQUARE_RATIO = 1.40   # long/short ≤ this and leaf fills it → no crop
 
 
 # ─────────────────────────────────────────────
@@ -79,6 +89,51 @@ def estimate_damage_percent(img_bgr: np.ndarray) -> float:
     if leaf_px == 0:
         return 0.0
     return round(float(1.0 - healthy.sum() / leaf_px) * 100.0, 2)
+
+
+def crop_to_leaf(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Square crop around the leaf, so a wide 16:9 camera frame looks like the
+    training photos (square, leaf filling the frame) instead of being
+    squashed with lots of background. The leaf is found by its green tissue;
+    with too little green (e.g. a fully browned leaf) it falls back to the
+    centre square.
+
+    Measured on simulated 1280×720 webcam frames: 77% → 93% accuracy vs.
+    stretching the whole frame.
+    """
+    h0, w0 = img_bgr.shape[:2]
+    short = min(h0, w0)
+    scale = CROP_WORK_WIDTH / w0
+    small = cv2.resize(img_bgr, (CROP_WORK_WIDTH, max(1, round(h0 * scale))),
+                       interpolation=cv2.INTER_AREA)
+    h, s, v = cv2.split(cv2.cvtColor(small, cv2.COLOR_BGR2HSV))
+    green = ((s >= LEAF_MIN_SAT) & (v >= LEAF_MIN_VAL)
+             & (h >= HEALTHY_HUE_RANGE[0]) & (h <= HEALTHY_HUE_RANGE[1]))
+    green = cv2.morphologyEx(green.astype(np.uint8), cv2.MORPH_OPEN,
+                             np.ones((3, 3), np.uint8)) > 0
+    ys, xs = np.nonzero(green)
+
+    if len(xs) < CROP_MIN_GREEN * green.size:
+        side = short
+        cx, cy = w0 / 2, h0 / 2
+    else:
+        # 2nd–98th percentile: ignores stray green specks in the background
+        x0, x1 = np.percentile(xs, [2, 98]) / scale
+        y0, y1 = np.percentile(ys, [2, 98]) / scale
+        side = max(x1 - x0, y1 - y0) * CROP_MARGIN
+        side = min(max(side, CROP_MIN_SIDE * short), short)
+        if side >= CROP_FULL_SIDE * short:
+            side = short   # leaf fills the frame: keep its full context
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+    if side >= short and max(h0, w0) <= CROP_SQUARE_RATIO * short:
+        return img_bgr     # already a square-ish close-up, like the training photos
+
+    side = int(side)
+    x = int(np.clip(cx - side / 2, 0, w0 - side))
+    y = int(np.clip(cy - side / 2, 0, h0 - side))
+    return img_bgr[y:y + side, x:x + side]
 
 
 # ─────────────────────────────────────────────
@@ -132,7 +187,9 @@ def preprocess_for_inference(img_input, target_size: tuple = IMG_SIZE) -> np.nda
         float32 numpy array of shape (1, H, W, 3), values in [0, 1]
     """
     img_rgb = cv2.cvtColor(load_bgr(img_input), cv2.COLOR_BGR2RGB)
-    img_rgb = cv2.resize(img_rgb, target_size, interpolation=cv2.INTER_LINEAR)
+    # Area averaging when shrinking (like training's cv2.INTER_AREA load step)
+    interp = cv2.INTER_AREA if img_rgb.shape[1] > target_size[0] else cv2.INTER_LINEAR
+    img_rgb = cv2.resize(img_rgb, target_size, interpolation=interp)
     img_float = img_rgb.astype(np.float32) * NORM_SCALE
     return np.expand_dims(img_float, axis=0)
 

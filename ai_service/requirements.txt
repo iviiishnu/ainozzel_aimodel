@@ -1,25 +1,28 @@
 # Crop Scanner — Python ML Server Dependencies
-# Install with: pip install -r requirements.txt
+# Install with: pip install -r requirements.txt  (Python 3.11)
 
 # Core ML
-tensorflow==2.15.0
-numpy==1.26.4
+# The models in models/ were saved with Keras 3.15 — TF 2.15 (Keras 2)
+# cannot load them, so TF must be ≥ 2.16.
+tensorflow==2.21.0
+keras==3.15.1
+numpy>=2.0,<2.5
 
 # Image processing
-opencv-python==4.9.0.80
-Pillow==10.2.0
-scikit-image==0.22.0
+opencv-python>=4.10,<5   # 4.10+ is built against NumPy 2
+Pillow>=10.4
+scikit-image>=0.24
 
 # Flask server
 flask==3.0.3
 waitress==3.0.0          # Production WSGI server (Windows-compatible)
 
 # Inference utilities
-scipy==1.12.0            # For entropy-based damage calculation
+scipy>=1.13              # For entropy-based damage calculation
 
 # Training utilities
-scikit-learn==1.4.2      # For class weight computation + evaluation metrics
-matplotlib==3.8.4        # Training curves + confusion matrix plots
+scikit-learn>=1.5        # For class weight computation + evaluation metrics
+matplotlib>=3.9          # Training curves + confusion matrix plots
 seaborn==0.13.2          # Confusion matrix heatmap
 
 # Environment config

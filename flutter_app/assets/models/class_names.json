@@ -3,7 +3,10 @@
   "Bacterial_Leaf_Spot",
   "Black_rot",
   "Downy_Mildew",
+  "Healthy",
+  "Leaf_Spot_Blight",
   "Mosaic_Disease",
+  "Not_Leaf",
   "Powdery_Mildew",
   "Rust"
 ]

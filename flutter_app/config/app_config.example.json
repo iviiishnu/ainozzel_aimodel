@@ -3,6 +3,9 @@
   "BLYNK_SERVER": "blynk.cloud",
   "BLYNK_AUTH_TOKEN": "your-blynk-device-auth-token",
   "CONFIDENCE_THRESHOLD": "0.50",
+  "SPRAY_CONFIDENCE": "0.60",
+  "MAX_HEALTHY_PROB": "0.10",
+  "CONFIRM_FRAMES": "2",
   "DAMAGE_MEDIUM": "15",
   "DAMAGE_HIGH": "35"
 }

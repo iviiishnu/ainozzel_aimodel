@@ -2,6 +2,7 @@
 .venv/
 venv/
 ai_service/venv/
+.venv-win/
 __pycache__/
 *.py[cod]
 
@@ -21,8 +22,9 @@ flutter_app/android/.gradle/
 # Runtime uploads and local secrets
 ai_service/tools/uploads/
 ai_service/uploads/
+ai_service/captures/
 QuickShareSetup.exe
-ai_service/models/*.h5
+ai_service/models/**/*.h5
 *.env
 !.env.example
 # Local secrets

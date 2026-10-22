@@ -23,6 +23,8 @@ dependencies:
   tflite_flutter: ^0.12.1
   image: ^4.0.4
   shared_preferences: ^2.5.5
+  # Browser webcam for the web build (pure Dart, no native code)
+  web: ^1.1.0
 
 dev_dependencies:
   flutter_test:
@@ -36,3 +38,5 @@ flutter:
     - assets/images/svce_logo.png
     - assets/models/crop_model_float16.tflite
     - assets/models/class_names.json
+    - assets/models/ood_stats.json
+    - assets/models/ood_prototypes.bin

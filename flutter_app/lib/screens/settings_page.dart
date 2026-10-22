@@ -25,6 +25,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _interval =
       TextEditingController(text: '${AppConfig.liveIntervalSeconds}');
   late bool _useOnDevice = AppConfig.useOnDevice;
+  late String _resolution = AppConfig.cameraResolution;
+  late bool _swapRedBlue = AppConfig.cameraSwapRedBlue;
   bool _showToken = false;
   String? _testResult;
 
@@ -46,6 +48,8 @@ class _SettingsPageState extends State<SettingsPage> {
       useOnDevice: _useOnDevice,
       liveIntervalSeconds: int.parse(_interval.text),
     );
+    await AppConfig.setCameraResolution(_resolution);
+    await AppConfig.setCameraSwapRedBlue(_swapRedBlue);
     if (mounted) Navigator.pop(context, true);
   }
 
@@ -85,7 +89,8 @@ class _SettingsPageState extends State<SettingsPage> {
         blynkServer: _blynkServer.text,
         blynkToken: _blynkToken.text,
         useOnDevice: _useOnDevice,
-        liveIntervalSeconds: int.tryParse(_interval.text) ?? 5,
+        liveIntervalSeconds: int.tryParse(_interval.text) ??
+            AppConfig.defaultLiveIntervalSeconds,
       );
 
   @override
@@ -157,8 +162,36 @@ class _SettingsPageState extends State<SettingsPage> {
               keyboardType: TextInputType.number,
               validator: (v) {
                 final n = int.tryParse(v ?? '');
-                return (n == null || n < 2 || n > 300) ? '2–300' : null;
+                return (n == null || n < 1 || n > 300) ? '1–300' : null;
               },
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: _resolution,
+              decoration: const InputDecoration(
+                labelText: 'USB camera resolution',
+                helperText: 'Higher = more leaf detail, slower scans. '
+                    'Applies next time Live Scan opens.',
+                border: OutlineInputBorder(),
+              ),
+              items: const {
+                'low': 'Low (~480p)',
+                'medium': 'Medium (~720p)',
+                'high': 'High (~1080p)',
+                'max': 'Camera maximum',
+              }
+                  .entries
+                  .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                  .toList(),
+              onChanged: (v) => setState(() => _resolution = v ?? _resolution),
+            ),
+            SwitchListTile(
+              title: const Text('Fix USB camera colours (swap red/blue)'),
+              subtitle: const Text(
+                  'On if Live Scan → Details shows skin blue / leaves teal '
+                  'with this off'),
+              value: _swapRedBlue,
+              onChanged: (v) => setState(() => _swapRedBlue = v),
             ),
             const SizedBox(height: 24),
             Row(

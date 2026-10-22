@@ -17,7 +17,8 @@ class DamageEstimator {
   static const int leafMinVal = 40;
   static const int leafHueMin = 5, leafHueMax = 90;
   static const int healthyHueMin = 35, healthyHueMax = 85;
-  static const double minLeafFraction = 0.04;
+  // 0.10 keeps 99.4% of real leaves and rejects plain fabric, walls and sky.
+  static const double minLeafFraction = 0.10;
 
   /// Returns (leafFraction 0–1, damagePercent 0–100).
   static ({double leafFraction, double damagePercent}) analyze(img.Image image) {
@@ -30,7 +31,7 @@ class DamageEstimator {
 
     int leaf = 0, healthy = 0;
     for (final pixel in small) {
-      final hsv = _toHsv(pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt());
+      final hsv = toHsv(pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt());
       final h = hsv.$1, s = hsv.$2, v = hsv.$3;
       if (s >= leafMinSat && v >= leafMinVal && h >= leafHueMin && h <= leafHueMax) {
         leaf++;
@@ -47,7 +48,7 @@ class DamageEstimator {
   }
 
   /// RGB (0–255) → HSV on OpenCV's 8-bit scale: H 0–180, S 0–255, V 0–255.
-  static (int, int, int) _toHsv(int r, int g, int b) {
+  static (int, int, int) toHsv(int r, int g, int b) {
     final maxC = r > g ? (r > b ? r : b) : (g > b ? g : b);
     final minC = r < g ? (r < b ? r : b) : (g < b ? g : b);
     final delta = maxC - minC;

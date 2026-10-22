@@ -1,0 +1,6 @@
+[submodule "ai_service/raw_datasets/dl/plantdoc"]
+	path = ai_service/raw_datasets/dl/plantdoc
+	url = https://github.com/pratikkayal/PlantDoc-Dataset.git
+[submodule "ai_service/raw_datasets/dl/pv"]
+	path = ai_service/raw_datasets/dl/pv
+	url = https://github.com/spMohanty/PlantVillage-Dataset.git

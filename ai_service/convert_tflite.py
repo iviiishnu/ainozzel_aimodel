@@ -10,6 +10,10 @@ Three conversion modes:
   3. int8     — Full integer quantization. ~4x smaller, fastest on CPU.
                 Best for low-end phones. Requires representative dataset.
 
+The TFLite model has TWO outputs: class probabilities and the 1280-d
+backbone features used by the unfamiliar-image check (ood.py). Apps tell
+them apart by size, not by output index (the converter may reorder them).
+
 Usage:
     python convert_tflite.py --mode float16
     python convert_tflite.py --mode int8
@@ -70,10 +74,20 @@ def get_representative_dataset(n_samples: int = 100):
 # ─────────────────────────────────────────────
 # CONVERSION FUNCTIONS
 # ─────────────────────────────────────────────
+def _converter(model) -> tf.lite.TFLiteConverter:
+    """
+    Goes through a SavedModel export: from_keras_model crashes
+    ("missing attribute 'value'") with Keras 3 models on TF 2.15.
+    """
+    import tempfile
+    export_dir = tempfile.mkdtemp()
+    model.export(export_dir)
+    return tf.lite.TFLiteConverter.from_saved_model(export_dir)
+
+
 def convert_float32(model) -> bytes:
     """No quantization — baseline conversion."""
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    return converter.convert()
+    return _converter(model).convert()
 
 
 def convert_float16(model) -> bytes:
@@ -83,7 +97,7 @@ def convert_float16(model) -> bytes:
     ~2x size reduction with negligible accuracy loss.
     Recommended for most Android devices.
     """
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter = _converter(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.target_spec.supported_types = [tf.float16]
     return converter.convert()
@@ -96,7 +110,7 @@ def convert_int8(model) -> bytes:
     ~4x size reduction, fastest inference on CPU.
     Requires representative dataset for calibration.
     """
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter = _converter(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = get_representative_dataset
     converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
@@ -122,7 +136,8 @@ def verify_tflite(tflite_path: str):
     input_dtype = input_details[0]['dtype']
 
     print(f"  Input shape: {input_shape}, dtype: {input_dtype}")
-    print(f"  Output shape: {output_details[0]['shape']}")
+    for o in output_details:
+        print(f"  Output shape: {o['shape']}")
 
     # Create dummy input
     if input_dtype == np.uint8:
@@ -132,8 +147,9 @@ def verify_tflite(tflite_path: str):
 
     interpreter.set_tensor(input_details[0]['index'], dummy)
     interpreter.invoke()
-    output = interpreter.get_tensor(output_details[0]['index'])
-    print(f"  Dummy inference output shape: {output.shape} ✅")
+    for o in output_details:
+        output = interpreter.get_tensor(o['index'])
+        print(f"  Dummy inference output shape: {output.shape} OK")
 
 
 # ─────────────────────────────────────────────
@@ -161,6 +177,8 @@ def main():
     print(f"Loading model: {args.input}")
     model = tf.keras.models.load_model(args.input)
     print(f"Model input shape: {model.input_shape}")
+    from ood import feature_model
+    model = feature_model(model)   # outputs: [class probs, backbone features]
 
     output_path = os.path.join(MODEL_DIR, f"crop_model_{args.mode}.tflite")
 

@@ -10,6 +10,8 @@ class AppColors {
   static const Color accent = Color(0xFFF1C40F); // Warm accent (lime/orange)
   static const Color healthy = Color(0xFF2ECC71); // Green for Healthy
   static const Color diseased = Color(0xFFE74C3C); // Red for Diseased
+  static const Color cta = Color(0xFFD9480F); // Deep orange CTA (Start button)
+  static const Color ctaHover = Color(0xFFBF3F0B); // Hover state for CTA
 }
 
 class AppTheme {

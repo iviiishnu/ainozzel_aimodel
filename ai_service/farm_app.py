@@ -63,6 +63,12 @@ try:
 
     model       = load_keras_model()
     CLASS_NAMES = load_class_names()
+    import numpy as np
+    n_outputs = model.predict(np.zeros((1, *model.input_shape[1:]), np.float32),
+                              verbose=0).shape[-1]
+    if n_outputs != len(CLASS_NAMES):
+        raise RuntimeError(f"Model outputs {n_outputs} classes but class_names.json "
+                           f"has {len(CLASS_NAMES)} — retrain or fix the label file.")
     logger.info(f"Ready. Classes: {CLASS_NAMES}")
 
 except Exception as e:

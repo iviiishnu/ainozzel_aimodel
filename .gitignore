@@ -31,3 +31,7 @@ ai_service/models/**/*.h5
 ardunio/**/secrets.h
 ai_service/.env
 flutter_app/config/app_config.json
+
+__pycache__/
+*.pyc
+**/secrets.h

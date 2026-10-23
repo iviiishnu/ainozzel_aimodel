@@ -291,6 +291,17 @@ class TfliteService {
     }
     final double maxProb = probs[maxIdx];
 
+    // Most likely disease: best class that is neither Healthy nor Not_Leaf.
+    int bestDisease = -1;
+    for (int i = 0; i < probs.length; i++) {
+      final label = _classLabels[i];
+      if (label == AppConfig.healthyClass || label == AppConfig.notLeafClass) {
+        continue;
+      }
+      if (bestDisease < 0 || probs[i] > probs[bestDisease]) bestDisease = i;
+    }
+    final notLeafIdx = _classLabels.indexOf(AppConfig.notLeafClass);
+
     final leafDetected = prepared.leafFraction >= DamageEstimator.minLeafFraction;
     final uncertain = maxProb < AppConfig.confidenceThreshold;
 
@@ -299,6 +310,11 @@ class TfliteService {
       confidence: maxProb,
       isUncertain: uncertain,
       healthyProb: _healthyIndex < 0 ? 0.0 : probs[_healthyIndex],
+      notLeafProb: notLeafIdx < 0 ? 0.0 : probs[notLeafIdx],
+      topClass: _classLabels[maxIdx],
+      bestDisease: bestDisease < 0 ? '' : _classLabels[bestDisease],
+      bestDiseaseProb: bestDisease < 0 ? 0.0 : probs[bestDisease],
+      leafFraction: prepared.leafFraction,
       leafDetected: leafDetected,
       unfamiliarScore: unfamiliar,
       unfamiliarThreshold: unfamiliar == null ? null : _oodThreshold,

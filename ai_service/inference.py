@@ -50,6 +50,31 @@ NOT_LEAF_CLASS = os.getenv("NOT_LEAF_CLASS", "Not_Leaf")
 SPRAY_CONFIDENCE = float(os.getenv("SPRAY_CONFIDENCE", "0.60"))
 MAX_HEALTHY_PROB = float(os.getenv("MAX_HEALTHY_PROB", "0.10"))
 
+# How a leaf is judged diseased:
+#   confidence - the top class must be a disease with >= SPRAY_CONFIDENCE and
+#                Healthy < MAX_HEALTHY_PROB (above). Similar diseases split the
+#                model's confidence, so real disease is often filtered out
+#                (field photos: 29% of diseased leaves missed).
+#   score      - spray when the model's probability that the leaf is ANY disease,
+#                1 - P(Healthy) - P(Not_Leaf), is >= SPRAY_SCORE. Which disease
+#                it is no longer matters for the spray decision. Field photos at
+#                0.7: 15% missed, 15% healthy sprayed (confidence: 29% / 9%).
+# The unfamiliar-image check and Not_Leaf class still apply in both modes.
+SPRAY_RULE  = os.getenv("SPRAY_RULE", "confidence").strip().lower()
+SPRAY_SCORE = float(os.getenv("SPRAY_SCORE", "0.70"))
+if SPRAY_RULE not in ("confidence", "score"):
+    raise RuntimeError(f"SPRAY_RULE must be 'confidence' or 'score', not {SPRAY_RULE!r}")
+
+# Leaf pre-check (preprocessing.is_leaf_present). It only measures how much of
+# the frame is green/brown plant colour, so dark or necrotic leaves (e.g.
+# Anthracnose: 17% of validation leaves fall under the threshold) look like
+# "no leaf". Below LEAF_HARD_FRACTION the frame is rejected outright (blank
+# wall, sky, lens cap); between that and MIN_LEAF_FRACTION the classifier gets
+# the final say, but only a confident Diseased/Healthy answer overrides the
+# pre-check - Not_Leaf, Uncertain and unfamiliar results stay rejected.
+LEAF_HARD_FRACTION = float(os.getenv("LEAF_HARD_FRACTION", "0.02"))
+LEAF_OVERRIDE_CONFIDENCE = float(os.getenv("LEAF_OVERRIDE_CONFIDENCE", "0.85"))
+
 # Damage severity bands (percent of leaf tissue that is not green).
 # Only decide how LONG a diseased leaf is sprayed (the ESP32 maps
 # Low → short burst, Medium → ~2 s, High → longer); whether to spray at all
@@ -228,12 +253,48 @@ def predict_with_tta(model, img_input, class_names: list, n_variants: int = 5) -
     """
     img_bgr = crop_to_leaf(load_bgr(img_input))
     variants = generate_tta_variants(img_bgr, n_variants=n_variants)
-    outs = [model.predict_both(v) for v in variants]
-    avg_preds = aggregate_predictions([probs[0] for probs, _ in outs])
+    # One batched forward pass instead of one model call per variant.
+    probs, feats = model.predict_both(np.concatenate(variants, axis=0))
+    avg_preds = aggregate_predictions(list(probs))
     # The OOD threshold was set on single un-augmented frames → use the original.
-    feats = outs[0][1]
     return _build_result(avg_preds, None if feats is None else feats[0],
                          class_names, img_bgr, n_frames=len(variants))
+
+
+def leaf_gate_passes(leaf_frac: float, result: dict, threshold: float) -> bool:
+    """
+    Decides whether an image counts as "a leaf is present".
+
+    leaf_frac is preprocessing.leaf_fraction(); threshold is the normal
+    MIN_LEAF_FRACTION. Enough plant colour always passes. Below LEAF_HARD_FRACTION
+    never passes. In between, only a confident Diseased/Healthy classification
+    passes, so dark diseased leaves are kept while fabric, walls and skin
+    (Not_Leaf / Uncertain / unfamiliar) are still rejected.
+    """
+    if leaf_frac >= threshold:
+        return True
+    if leaf_frac < LEAF_HARD_FRACTION:
+        return False
+    return (result.get("status") in ("Diseased", "Healthy")
+            and result.get("confidence_percent", 0.0) >= LEAF_OVERRIDE_CONFIDENCE * 100)
+
+
+def spray_score(preds: np.ndarray, class_names: list) -> float:
+    """Probability that the image is a diseased leaf: 1 - P(Healthy) - P(Not_Leaf)."""
+    p = 0.0
+    for name in (HEALTHY_CLASS, NOT_LEAF_CLASS):
+        if name in class_names:
+            p += float(preds[class_names.index(name)])
+    return max(0.0, 1.0 - p)
+
+
+def _best_disease(preds: np.ndarray, class_names: list) -> int:
+    """Index of the most likely disease class (Healthy and Not_Leaf excluded)."""
+    best, best_p = -1, -1.0
+    for i, name in enumerate(class_names):
+        if name not in (HEALTHY_CLASS, NOT_LEAF_CLASS) and preds[i] > best_p:
+            best, best_p = i, float(preds[i])
+    return best
 
 
 def _build_result(preds: np.ndarray, features, class_names: list,
@@ -250,6 +311,24 @@ def _build_result(preds: np.ndarray, features, class_names: list,
     # classifier can't name the disease (e.g. a dead/dried leaf, which is
     # not one of the trained classes).
     damage_percent = estimate_damage_percent(img_bgr)
+
+    if SPRAY_RULE == "score" and class_names[idx] != NOT_LEAF_CLASS:
+        score = spray_score(preds, class_names)
+        unfamiliar = unfamiliar_score(features, class_names)
+        if score >= SPRAY_SCORE and (unfamiliar is None or unfamiliar[0] <= unfamiliar[1]):
+            d = _best_disease(preds, class_names)
+            return {
+                "crop": class_names[d],
+                "status": "Diseased",
+                "disease": class_names[d],
+                "confidence_percent": round(float(preds[d]) * 100, 2),
+                "spray_score_percent": round(score * 100, 2),
+                "damage_percent": damage_percent,
+                "severity": get_severity_label(damage_percent),
+                "spray_recommended": True,
+                "all_class_probs": all_probs,
+                "frames_averaged": n_frames,
+            }
 
     if confidence < CONFIDENCE_THRESHOLD:
         return {
@@ -323,7 +402,8 @@ def _build_result(preds: np.ndarray, features, class_names: list,
 
     healthy_prob = (float(preds[class_names.index(HEALTHY_CLASS)])
                     if HEALTHY_CLASS in class_names else 0.0)
-    if confidence < SPRAY_CONFIDENCE or healthy_prob >= MAX_HEALTHY_PROB:
+    if (SPRAY_RULE == "score" or confidence < SPRAY_CONFIDENCE
+            or healthy_prob >= MAX_HEALTHY_PROB):
         return {
             "crop": "Unknown",
             "status": "Uncertain",

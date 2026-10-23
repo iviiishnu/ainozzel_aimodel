@@ -11,7 +11,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 import com.example.spring_backend.service.CropService;
 
@@ -47,5 +49,12 @@ public class CropController {
     public ResponseEntity<String> tooLarge() {
         return ResponseEntity.status(413).contentType(MediaType.APPLICATION_JSON)
                 .body("{\"error\":\"Image too large\"}");
+    }
+
+    // Not multipart, or no "file" part: a client mistake, not a server error.
+    @ExceptionHandler({MissingServletRequestPartException.class, MultipartException.class})
+    public ResponseEntity<String> badUpload() {
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON)
+                .body("{\"error\":\"No file uploaded. Send the image as multipart field 'file'.\"}");
     }
 }

@@ -1,7 +1,5 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,14 +10,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config.dart';
-import '../services/analysis_service.dart';
 import '../services/app_strings.dart';
-import '../services/blynk_service.dart';
 import '../services/language_state.dart';
 import '../services/tflite_service.dart';
 import 'gallery_result_screen.dart';
 import 'settings_page.dart';
-import '../widgets/info_card.dart';
 import '../widgets/camera_choice.dart';
 import '../widgets/web_camera_page.dart';
 
@@ -48,40 +43,10 @@ class CropAnalyzerPage extends StatefulWidget {
 
 class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
   // ── Business state (unchanged) ────────────────────────────────────────────
-  File? _image;
-  Map<String, dynamic>? _parsedResult;
-  bool _isLoading = false;
   final ImagePicker picker = ImagePicker();
-
-  bool? _isMotorRunning;
-  String? _iotStatus;
-  Timer? _motorStatusTimer;
 
   bool get _useOnDeviceInference =>
       AppConfig.useOnDevice && TfliteService.isLoaded;
-
-  @override
-  void initState() {
-    super.initState();
-    _startMotorPolling();
-  }
-
-  void _startMotorPolling() {
-    _motorStatusTimer?.cancel();
-    _motorStatusTimer = null;
-    if (!AppConfig.iotConfigured) return;
-    _motorStatusTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) async {
-      final status = await BlynkService.getMotorStatus();
-      if (mounted) setState(() => _isMotorRunning = status);
-    });
-  }
-
-  @override
-  void dispose() {
-    _motorStatusTimer?.cancel();
-    super.dispose();
-  }
 
   Future<void> _openSettings() async {
     await Navigator.push(
@@ -90,7 +55,6 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
     );
     if (!mounted) return;
     setState(() {});
-    _startMotorPolling();
   }
 
   // ── Image picking (unchanged logic) ──────────────────────────────────────
@@ -211,53 +175,6 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
             GalleryResultScreen(imageFile: imageFile, imageBytes: imageBytes),
       ),
     );
-  }
-
-  Future<void> _analyzeImage(File imageFile) async {
-    setState(() {
-      _image = imageFile;
-      _isLoading = true;
-      _parsedResult = null;
-      _iotStatus = null;
-    });
-
-    final result = await AnalysisService.analyze(imageFile);
-    if (!mounted) return;
-    setState(() {
-      _parsedResult = result;
-      _isLoading = false;
-    });
-
-    final iot = await AnalysisService.sendToSprayer(result);
-    if (mounted) setState(() => _iotStatus = iot);
-  }
-
-  Future<void> _analyzeBytes(Uint8List bytes) async {
-    setState(() {
-      _image = null;
-      _isLoading = true;
-      _parsedResult = null;
-      _iotStatus = null;
-    });
-
-    final result = await AnalysisService.analyzeBytes(bytes);
-    if (!mounted) return;
-    setState(() {
-      _parsedResult = result;
-      _isLoading = false;
-    });
-
-    final iot = await AnalysisService.sendToSprayer(result);
-    if (mounted) setState(() => _iotStatus = iot);
-  }
-
-  Color _severityColor(String severity) {
-    switch (severity) {
-      case 'High':   return Colors.red;
-      case 'Medium': return Colors.orange;
-      case 'Low':    return Colors.green;
-      default:       return Colors.grey;
-    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -478,83 +395,6 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
     );
   }
 
-  // ── 3. Image card ──────────────────────────────────────────────────────────
-  Widget _buildImageCard(
-    AppStrings s,
-    bool isDesktop,
-    double maxW,
-    double maxH,
-    List<String> fallbacks,
-  ) {
-    final double cardH = (maxH * 0.42).clamp(280.0, 520.0);
-
-    return Center(
-      child: Container(
-        width: min(maxW, 1100),
-        height: cardH,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.08),
-              blurRadius: 20,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: _image == null
-            ? _buildEmptyCard(s, isDesktop, fallbacks)
-            : _buildImagePreview(),
-      ),
-    );
-  }
-
-  Widget _buildEmptyCard(
-      AppStrings s, bool isDesktop, List<String> fallbacks) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.add_photo_alternate_outlined,
-                size: isDesktop ? 64 : 52,
-                color: _kGreen.withValues(alpha: 0.7)),
-            const SizedBox(height: 14),
-            Text(
-              s.noImageSelected,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(
-                fontSize: isDesktop ? 20 : 16,
-                fontWeight: FontWeight.bold,
-                color: _kDarkTeal,
-              ).copyWith(fontFamilyFallback: fallbacks),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              s.chooseHint,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(
-                fontSize: isDesktop ? 14 : 12,
-                color: Colors.grey[500],
-                height: 1.5,
-              ).copyWith(fontFamilyFallback: fallbacks),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildImagePreview() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Image.file(_image!, fit: BoxFit.contain),
-    );
-  }
-
   // ── 4. Action row ──────────────────────────────────────────────────────────
   Widget _buildActionRow(
     AppStrings s,
@@ -579,7 +419,7 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
             width: boxW,
             height: boxH,
             isHighlighted: false,
-            enabled: !_isLoading,
+            enabled: true,
             fallbacks: fallbacks,
             onTap: () => pickImage(ImageSource.gallery),
           ),
@@ -591,7 +431,7 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
             width: isDesktop ? boxW + 20 : boxW,
             height: isDesktop ? boxH + 20 : boxH,
             isHighlighted: true,
-            enabled: !_isLoading,
+            enabled: true,
             fallbacks: fallbacks,
             useLiveCamIcon: true,
             onTap: () => Navigator.push(
@@ -607,7 +447,7 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
             width: boxW,
             height: boxH,
             isHighlighted: false,
-            enabled: !_isLoading,
+            enabled: true,
             fallbacks: fallbacks,
             onTap: () => pickImage(ImageSource.camera),
           ),
@@ -616,186 +456,6 @@ class _CropAnalyzerPageState extends State<CropAnalyzerPage> {
     );
   }
 
-  // ── Loading ────────────────────────────────────────────────────────────────
-  Widget _buildLoadingCard(AppStrings s, List<String> fallbacks) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 3,
-      margin: const EdgeInsets.only(bottom: 16),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(color: _kDarkTeal),
-            const SizedBox(width: 20),
-            Text(
-              s.analyzing,
-              style: GoogleFonts.poppins(fontSize: 16, color: _kDarkTeal)
-                  .copyWith(fontFamilyFallback: fallbacks),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── Results ────────────────────────────────────────────────────────────────
-  Widget _buildResults(
-      AppStrings s, bool isDesktop, List<String> fallbacks) {
-    if (_parsedResult!['error'] != null) {
-      return Card(
-        color: Colors.red[50],
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        margin: const EdgeInsets.only(bottom: 16),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  [
-                    _parsedResult!['error'],
-                    if (_parsedResult!['message'] != null)
-                      _parsedResult!['message'],
-                  ].join('\n'),
-                  style: const TextStyle(color: Colors.red),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // Source badge
-        if (_parsedResult!['source'] != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  _parsedResult!['source'] == 'on_device'
-                      ? Icons.phone_android
-                      : Icons.cloud_outlined,
-                  size: 14,
-                  color: Colors.grey[600],
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  _parsedResult!['source'] == 'on_device'
-                      ? s.onDeviceTflite
-                      : _parsedResult!['source'] == 'server_fallback'
-                          ? s.serverFallback
-                          : s.serverInference,
-                  style:
-                      TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-                if (_parsedResult!['inference_ms'] != null) ...[
-                  const SizedBox(width: 8),
-                  Text(
-                    '${_parsedResult!['inference_ms']}ms',
-                    style:
-                        TextStyle(fontSize: 12, color: Colors.grey[500]),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-        // Uncertain warning
-        if (_parsedResult!['status'] == 'Uncertain')
-          Card(
-            color: Colors.orange[50],
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16)),
-            margin: const EdgeInsets.only(bottom: 10),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning_amber, color: Colors.orange),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      _parsedResult!['message'] ?? s.retakeHint,
-                      style: const TextStyle(color: Colors.orange),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          )
-        else ...[
-          InfoCard(
-            title: s.disease,
-            value: _parsedResult!['disease'] ?? 'Unknown',
-            icon: Icons.coronavirus_outlined,
-            valueColor: Colors.red[700],
-          ),
-          InfoCard(
-            title: s.severity,
-            value: CropAnalyzerPage.getSeverity(
-              (_parsedResult!['damage_percent'] as num?)?.toDouble() ?? 0.0,
-            ),
-            icon: Icons.bar_chart,
-            valueColor: _severityColor(
-              CropAnalyzerPage.getSeverity(
-                (_parsedResult!['damage_percent'] as num?)?.toDouble() ?? 0.0,
-              ),
-            ),
-          ),
-        ],
-
-        InfoCard(
-          title: s.damage,
-          value: _parsedResult!['damage_percent'] != null
-              ? '${(_parsedResult!['damage_percent'] as num).toStringAsFixed(2)}%'
-              : 'N/A',
-          icon: Icons.warning_amber,
-        ),
-        InfoCard(
-          title: s.confidence,
-          value: _parsedResult!['confidence_percent'] != null
-              ? '${(_parsedResult!['confidence_percent'] as num).toStringAsFixed(2)}%'
-              : 'N/A',
-          progress: ((_parsedResult!['confidence_percent'] as num?)
-                          ?.toDouble() ??
-                      0) /
-                  100,
-          icon: Icons.show_chart,
-        ),
-
-        // Sprayer status
-        Card(
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16)),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: ListTile(
-            leading: Icon(
-              _isMotorRunning == true ? Icons.flash_on : Icons.flash_off,
-              color: _isMotorRunning == true ? _kGreen : Colors.grey,
-            ),
-            title: Text(s.sprayer),
-            subtitle: Text(
-              [
-                _isMotorRunning == null
-                    ? s.motorUnavailable
-                    : (_isMotorRunning! ? s.motorRunning : s.motorStopped),
-                if (_iotStatus != null) _iotStatus!,
-              ].join(' • '),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

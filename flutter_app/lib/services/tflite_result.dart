@@ -6,6 +6,15 @@ class TfliteResult {
   final double confidence;
   final bool isUncertain;
   final double healthyProb; // model probability of the Healthy class
+  final double notLeafProb; // model probability of the Not_Leaf class
+  /// Highest-probability class, even when below the confidence threshold
+  /// ([disease] is then 'Uncertain').
+  final String topClass;
+  /// Most likely disease (Healthy and Not_Leaf excluded) and its probability.
+  final String bestDisease;
+  final double bestDiseaseProb;
+  /// Share of the frame that looks like plant tissue (HSV colour test).
+  final double leafFraction;
   final bool leafDetected;
   /// How unlike every training leaf the image is (ood.py); null = check off.
   final double? unfamiliarScore;
@@ -22,6 +31,11 @@ class TfliteResult {
     required this.confidence,
     required this.isUncertain,
     required this.healthyProb,
+    required this.notLeafProb,
+    required this.topClass,
+    required this.bestDisease,
+    required this.bestDiseaseProb,
+    required this.leafFraction,
     required this.leafDetected,
     this.unfamiliarScore,
     this.unfamiliarThreshold,
@@ -34,6 +48,10 @@ class TfliteResult {
   });
 
   double get confidencePercent => confidence * 100;
+
+  /// Probability the leaf is diseased at all: 1 - P(Healthy) - P(Not_Leaf).
+  /// Same as inference.spray_score() on the server.
+  double get sprayScore => (1.0 - healthyProb - notLeafProb).clamp(0.0, 1.0);
 
   /// Looks like no real training leaf (e.g. a leaf-print shirt) → never spray.
   bool get isUnfamiliar =>

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../config.dart';
+import 'damage_estimator.dart';
 import 'api_service.dart';
 import 'blynk_service.dart';
 import 'tflite_service.dart';
@@ -83,11 +84,51 @@ class AnalysisService {
     }
   }
 
+  /// Turns a model result into the app decision. Same order as the server
+  /// (ai_service/inference.py): classify, then the leaf pre-check.
+  @visibleForTesting
+  static Map<String, dynamic> decide(TfliteResult r) => _decide(r);
+
+  static Map<String, dynamic> _noLeaf() => _error('No leaf detected.',
+      message: 'Please capture a clear photo of a crop leaf.',
+      source: 'on_device');
+
+  /// "A leaf is present". Enough plant colour always passes; almost none never
+  /// does; in between only a confident Diseased/Healthy result passes, so dark
+  /// diseased leaves are kept while fabric, skin and walls are still rejected.
+  static bool _leafGatePasses(double leafFraction, Map<String, dynamic> result) {
+    if (leafFraction >= DamageEstimator.minLeafFraction) return true;
+    if (leafFraction < AppConfig.leafHardFraction) return false;
+    final status = result['status'];
+    final conf = (result['confidence_percent'] as num?)?.toDouble() ?? 0.0;
+    return (status == 'Diseased' || status == 'Healthy') &&
+        conf >= AppConfig.leafOverrideConfidence * 100;
+  }
+
   static Map<String, dynamic> _decide(TfliteResult r) {
-    if (!r.leafDetected) {
-      return _error('No leaf detected.',
-          message: 'Please capture a clear photo of a crop leaf.',
-          source: 'on_device');
+    if (r.leafFraction < AppConfig.leafHardFraction) return _noLeaf();
+    final result = _classify(r);
+    return _leafGatePasses(r.leafFraction, result) ? result : _noLeaf();
+  }
+
+  static Map<String, dynamic> _classify(TfliteResult r) {
+    // 'score' rule: spray when the model thinks the leaf is diseased at all,
+    // whichever disease it is (see AppConfig.sprayRule).
+    if (AppConfig.sprayRule == 'score' &&
+        r.topClass != AppConfig.notLeafClass &&
+        !r.isUnfamiliar &&
+        r.sprayScore >= AppConfig.sprayScore) {
+      return {
+        'status': 'Diseased',
+        'disease': r.bestDisease,
+        'confidence_percent': r.bestDiseaseProb * 100,
+        'spray_score_percent': r.sprayScore * 100,
+        'damage_percent': r.damagePercent,
+        'severity': AppConfig.severityFor(r.damagePercent),
+        'spray_recommended': true,
+        'inference_ms': r.inferenceMs,
+        'source': 'on_device',
+      };
     }
     // Not sure it is diseased → don't spray (a healthy leaf in odd light is
     // the usual cause). Damage is still shown for information.
@@ -151,7 +192,8 @@ class AnalysisService {
     }
     // Looks like a disease, but not clearly: the model still gives "Healthy"
     // a real chance, or isn't sure enough of the disease → don't spray.
-    if (r.confidence < AppConfig.sprayConfidence ||
+    if (AppConfig.sprayRule == 'score' ||
+        r.confidence < AppConfig.sprayConfidence ||
         r.healthyProb >= AppConfig.maxHealthyProb) {
       return {
         'status': 'Uncertain',

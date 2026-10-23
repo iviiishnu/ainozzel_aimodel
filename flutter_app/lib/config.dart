@@ -45,6 +45,22 @@ class AppConfig {
   // the Not_Leaf class and the unfamiliar-image check, not by this.
   static final int confirmFrames =
       int.tryParse(const String.fromEnvironment('CONFIRM_FRAMES')) ?? 2;
+  // How a leaf is judged diseased: 'confidence' (top class must be a disease
+  // with ≥ sprayConfidence) or 'score' (spray when 1 − P(Healthy) − P(Not_Leaf)
+  // ≥ sprayScore). Same switch as SPRAY_RULE / SPRAY_SCORE in ai_service/.env.
+  // Not const so tests can switch it.
+  static String sprayRule =
+      const String.fromEnvironment('SPRAY_RULE', defaultValue: 'confidence');
+  static final double sprayScore =
+      _doubleDefine(const String.fromEnvironment('SPRAY_SCORE'), 0.70);
+  // Leaf pre-check: below leafHardFraction of plant colour → "no leaf"; up to
+  // DamageEstimator.minLeafFraction only a confident Diseased/Healthy result
+  // counts as a leaf (dark/necrotic leaves such as Anthracnose fail the colour
+  // test). Same as LEAF_HARD_FRACTION / LEAF_OVERRIDE_CONFIDENCE on the server.
+  static final double leafHardFraction =
+      _doubleDefine(const String.fromEnvironment('LEAF_HARD_FRACTION'), 0.02);
+  static final double leafOverrideConfidence = _doubleDefine(
+      const String.fromEnvironment('LEAF_OVERRIDE_CONFIDENCE'), 0.85);
   static final double damageMedium = // ≥ → Medium
       _doubleDefine(const String.fromEnvironment('DAMAGE_MEDIUM'), 15);
   static final double damageHigh = // ≥ → High

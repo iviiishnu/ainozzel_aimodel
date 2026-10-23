@@ -17,12 +17,17 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 /**
  * Forwards images to the Python ML service and relays its JSON response.
  * The ML service URL comes from application.properties (AI_SERVICE_URL env).
  */
 @Service
 public class CropService {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final RestTemplate restTemplate;
     private final String aiServiceUrl;
@@ -65,7 +70,7 @@ public class CropService {
             return json(e.getStatusCode().value(), e.getResponseBodyAsString());
         } catch (ResourceAccessException e) {
             return json(HttpStatus.SERVICE_UNAVAILABLE.value(),
-                    "{\"error\":\"ML service unavailable\",\"details\":\"" + escape(e.getMessage()) + "\"}");
+                    error("ML service unavailable", e.getMessage()));
         }
     }
 
@@ -73,7 +78,12 @@ public class CropService {
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON).body(body);
     }
 
-    private static String escape(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    /** {"error": ..., "details": ...} with correct JSON escaping of any message text. */
+    private static String error(String error, String details) {
+        try {
+            return JSON.writeValueAsString(java.util.Map.of("error", error, "details", details == null ? "" : details));
+        } catch (JsonProcessingException e) {
+            return "{\"error\":\"" + error + "\"}";
+        }
     }
 }

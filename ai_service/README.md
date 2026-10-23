@@ -23,8 +23,8 @@ Linux/macOS: `python3.11 -m venv .venv && .venv/bin/pip install -r requirements.
 
 ```powershell
 .\.venv\Scripts\python farm_app.py
-curl.exe http://localhost:5010/health
-curl.exe -F "file=@leaf.jpg" http://localhost:5010/api/crop/analyze
+curl.exe http://127.0.0.1:5010/health
+curl.exe -F "file=@leaf.jpg" http://127.0.0.1:5010/api/crop/analyze
 ```
 
 ## Files

@@ -132,8 +132,9 @@ cd ai_service
 .\.venv\Scripts\python farm_app.py
 ```
 ```powershell
-curl.exe http://localhost:5010/health
+curl.exe http://127.0.0.1:5010/health
 ```
+> Use `127.0.0.1`, not `localhost`: the ML server listens on IPv4 only, and on Windows `localhost` tries IPv6 first, which adds a 0.2–2 s delay to every request.
 
 ### Model files
 Loading order: `models\crop_model_best.h5` → `new_model.h5` → `crop_model_float16.tflite`.
@@ -343,6 +344,25 @@ flutter build apk --release --dart-define-from-file=config/app_config.json
 To fire a test spray **without the app** (both pumps will run, so point the nozzles somewhere safe):
 ```powershell
 curl.exe "https://blynk.cloud/external/api/update?token=<AUTH_TOKEN>&V4=50"
+```
+
+### Automated tests
+
+Run these after any change (about 1 minute in total):
+```powershell
+# Python: preprocessing, spray decision logic, HTTP API (loads the real model)
+cd ai_service
+.\.venv\Scripts\pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m pytest tests
+
+# Spring backend: controller + ML-service error mapping
+cd ..\spring_backend\spring_backend_fresh\spring_backend
+.\mvnw.cmd test
+
+# Flutter: only 'Diseased' reaches the sprayer, thresholds, leaf crop, damage
+cd ..\..\..\flutter_app
+flutter analyze
+flutter test
 ```
 
 ### Live Scan

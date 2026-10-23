@@ -23,6 +23,7 @@ import logging
 
 import cv2
 from flask import Flask, request, jsonify
+from PIL import Image
 
 # Load settings from ai_service/.env if present (see .env.example)
 try:
@@ -58,8 +59,9 @@ TTA_VARIANTS = int(os.getenv("TTA_VARIANTS", "5"))
 # LOAD MODEL + CLASS NAMES AT STARTUP
 # ─────────────────────────────────────────────
 try:
-    from inference import load_keras_model, load_class_names, predict_with_tta
-    from preprocessing import is_leaf_present
+    from inference import (load_keras_model, load_class_names, predict_with_tta,
+                           leaf_gate_passes, LEAF_HARD_FRACTION)
+    from preprocessing import leaf_fraction, MIN_LEAF_FRACTION
 
     model       = load_keras_model()
     CLASS_NAMES = load_class_names()
@@ -95,6 +97,30 @@ def _validate_and_save(file) -> str:
     file_path = os.path.join(UPLOAD_DIR, safe_name)
     file.save(file_path)
     return file_path
+
+
+def _is_truncated(path: str) -> bool:
+    """
+    True if the file is an image cut off mid-upload (weak WiFi). OpenCV decodes
+    such a file silently, padding the missing part with grey, and the classifier
+    would then label that padding. Only truncation is treated as an error so
+    unusual-but-valid files still go to OpenCV.
+    """
+    try:
+        with Image.open(path) as im:
+            im.load()
+    except OSError as e:
+        return "truncated" in str(e).lower()
+    except Exception:
+        return False
+    return False
+
+
+def _no_leaf_response():
+    return jsonify({
+        "error": "No leaf detected.",
+        "message": "Please capture a clear photo of a crop leaf."
+    }), 400
 
 
 @app.errorhandler(413)
@@ -158,16 +184,17 @@ def analyze_crop():
 
     try:
         # ── 3. Leaf presence check ───────────────────────────────
+        if _is_truncated(file_path):
+            return jsonify({"error": "Could not decode image. File may be corrupt."}), 400
+
         img_bgr = cv2.imread(file_path)
         if img_bgr is None:
             return jsonify({"error": "Could not decode image. File may be corrupt."}), 400
 
-        if not is_leaf_present(img_bgr):
-            logger.info("No leaf detected in image.")
-            return jsonify({
-                "error": "No leaf detected.",
-                "message": "Please capture a clear photo of a crop leaf."
-            }), 400
+        leaf_frac = leaf_fraction(img_bgr)
+        if leaf_frac < LEAF_HARD_FRACTION:
+            logger.info(f"No leaf detected (leaf fraction {leaf_frac:.3f}).")
+            return _no_leaf_response()
 
         # ── 4. Run TTA prediction ────────────────────────────────
         # Uses 5 augmented variants averaged for stability.
@@ -178,6 +205,13 @@ def analyze_crop():
             logger.warning(f"TTA failed ({tta_err}), falling back to single prediction.")
             from inference import predict_single
             result = predict_single(model, file_path, CLASS_NAMES)
+
+        # Little plant colour in the frame: only a confident Diseased/Healthy
+        # answer counts as a leaf (dark/necrotic leaves fail the colour test).
+        if not leaf_gate_passes(leaf_frac, result, MIN_LEAF_FRACTION):
+            logger.info(f"No leaf detected (leaf fraction {leaf_frac:.3f}, "
+                        f"model: {result.get('status')} {result.get('confidence_percent')}%).")
+            return _no_leaf_response()
 
         logger.info(
             f"Prediction: {result.get('disease')} | "
